@@ -8,8 +8,7 @@ use http::{Request, Response, StatusCode};
 use h3::{
     client::{self, SendRequest},
     error::{Code, Kind},
-    quic::{self, SendStream},
-    server,
+    quic, server,
     test_helpers::{
         proto::{
             coding::Encode as _,
@@ -667,9 +666,10 @@ where
     request_stream.recv_response().await
 }
 
-async fn response<S, B>(mut stream: server::RequestStream<S, B>)
+async fn response<S, R, B>(mut stream: server::RequestStream<S, R, B>)
 where
-    S: quic::RecvStream + SendStream<B>,
+    S: quic::SendStream<B>,
+    R: quic::RecvStream,
     B: Buf,
 {
     stream

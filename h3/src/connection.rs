@@ -18,8 +18,7 @@ use crate::{
         stream::{StreamId, StreamType},
         varint::VarInt,
     },
-    qpack,
-    quic::{self, SendStream as _},
+    qpack, quic,
     stream::{self, AcceptRecvStream, AcceptedRecvStream},
 };
 
@@ -406,9 +405,9 @@ where
     }
 }
 
-impl<S, B> RequestStream<FrameStream<S>, B>
+impl<S, B> RequestStream<S, B>
 where
-    S: quic::SendStream<B> + quic::RecvStream,
+    S: quic::SendStream<B>,
     B: Buf,
 {
     /// Send some data on the response body.

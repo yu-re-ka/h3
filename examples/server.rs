@@ -8,7 +8,7 @@ use structopt::StructOpt;
 use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{debug, error, info, trace_span, warn};
 
-use h3::{quic::BidiStream, server::RequestStream};
+use h3::{quic::RecvStream, quic::SendStream, server::RequestStream};
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "server")]
@@ -112,13 +112,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn handle_request<T>(
+async fn handle_request<S, R>(
     req: Request<()>,
-    mut stream: RequestStream<T, Bytes>,
+    mut stream: RequestStream<S, R, Bytes>,
     serve_root: Arc<Option<PathBuf>>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    T: BidiStream<Bytes>,
+    S: SendStream<Bytes>,
+    R: RecvStream,
 {
     let (status, to_serve) = match serve_root.as_deref() {
         None => (StatusCode::OK, None),

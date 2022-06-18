@@ -16,7 +16,7 @@ use crate::{
     frame::FrameStream,
     proto::{frame::Frame, headers::Header, varint::VarInt},
     qpack,
-    quic::{self, RecvStream as _, SendStream as _},
+    quic::{self, BidiStream, RecvStream as _, SendStream as _},
     stream,
 };
 use tracing::{error, trace, warn};
@@ -66,24 +66,38 @@ where
 {
     pub async fn accept(
         &mut self,
-    ) -> Result<Option<(Request<()>, RequestStream<C::BidiStream, B>)>, Error> {
-        let mut stream = match future::poll_fn(|cx| self.poll_accept_request(cx)).await {
-            Ok(Some(s)) => FrameStream::new(s),
-            Ok(None) => {
-                // We always send a last GoAway frame to the client, so it knows which was the last
-                // non-rejected request.
-                self.inner.shutdown(0).await?;
-                return Ok(None);
-            }
-            Err(e) => {
-                if e.is_closed() {
+    ) -> Result<
+        Option<(
+            Request<()>,
+            RequestStream<
+                <C::BidiStream as BidiStream<B>>::SendStream,
+                <C::BidiStream as BidiStream<B>>::RecvStream,
+                B,
+            >,
+        )>,
+        Error,
+    > {
+        let (send_stream, mut recv_stream) =
+            match future::poll_fn(|cx| self.poll_accept_request(cx)).await {
+                Ok(Some(s)) => {
+                    let (send, recv) = s.split();
+                    (send, FrameStream::new(recv))
+                }
+                Ok(None) => {
+                    // We always send a last GoAway frame to the client, so it knows which was the last
+                    // non-rejected request.
+                    self.inner.shutdown(0).await?;
                     return Ok(None);
                 }
-                return Err(e);
-            }
-        };
+                Err(e) => {
+                    if e.is_closed() {
+                        return Ok(None);
+                    }
+                    return Err(e);
+                }
+            };
 
-        let frame = future::poll_fn(|cx| stream.poll_next(cx)).await;
+        let frame = future::poll_fn(|cx| recv_stream.poll_next(cx)).await;
 
         let mut encoded = match frame {
             Ok(Some(Frame::Headers(h))) => h,
@@ -106,14 +120,24 @@ where
             }
         };
 
+        let stream_id = send_stream.id();
         let mut request_stream = RequestStream {
-            stream_id: stream.id(),
-            request_end: self.request_end_send.clone(),
-            inner: connection::RequestStream::new(
-                stream,
-                self.max_field_section_size,
-                self.inner.shared.clone(),
-            ),
+            send: RequestSendStream {
+                inner: connection::RequestStream::new(
+                    send_stream,
+                    self.max_field_section_size,
+                    self.inner.shared.clone(),
+                ),
+            },
+            recv: RequestRecvStream {
+                stream_id,
+                request_end: self.request_end_send.clone(),
+                inner: connection::RequestStream::new(
+                    recv_stream,
+                    self.max_field_section_size,
+                    self.inner.shared.clone(),
+                ),
+            },
         };
 
         let qpack::Decoded { fields, .. } =
@@ -296,7 +320,11 @@ impl Builder {
     }
 }
 
-pub struct RequestStream<S, B>
+pub struct RequestSendStream<S, B> {
+    inner: connection::RequestStream<S, B>,
+}
+
+pub struct RequestRecvStream<S, B>
 where
     S: quic::RecvStream,
 {
@@ -305,16 +333,30 @@ where
     request_end: mpsc::UnboundedSender<StreamId>,
 }
 
-impl<S, B> ConnectionState for RequestStream<S, B>
+pub struct RequestStream<S, R, B>
 where
-    S: quic::RecvStream,
+    R: quic::RecvStream,
 {
+    send: RequestSendStream<S, B>,
+    recv: RequestRecvStream<R, B>,
+}
+
+impl<S, B> ConnectionState for RequestSendStream<S, B> {
     fn shared_state(&self) -> &SharedStateRef {
         &self.inner.conn_state
     }
 }
 
-impl<S, B> RequestStream<S, B>
+impl<S, R, B> ConnectionState for RequestStream<S, R, B>
+where
+    R: quic::RecvStream,
+{
+    fn shared_state(&self) -> &SharedStateRef {
+        self.send.shared_state()
+    }
+}
+
+impl<S, B> RequestRecvStream<S, B>
 where
     S: quic::RecvStream,
 {
@@ -327,9 +369,9 @@ where
     }
 }
 
-impl<S, B> RequestStream<S, B>
+impl<S, B> RequestSendStream<S, B>
 where
-    S: quic::RecvStream + quic::SendStream<B>,
+    S: quic::SendStream<B>,
     B: Buf,
 {
     pub async fn send_response(&mut self, resp: Response<()>) -> Result<(), Error> {
@@ -371,13 +413,59 @@ where
     }
 }
 
-impl<S, B> RequestStream<S, B>
+impl<S, R, B> RequestStream<S, R, B>
 where
-    S: quic::RecvStream + quic::SendStream<B>,
+    S: quic::SendStream<B>,
+    R: quic::RecvStream,
+    B: Buf,
+{
+    pub async fn recv_data(&mut self) -> Result<Option<Bytes>, Error> {
+        self.recv.recv_data().await
+    }
+
+    pub fn stop_sending(&mut self, error_code: crate::error::Code) {
+        self.recv.stop_sending(error_code)
+    }
+
+    pub async fn send_response(&mut self, resp: Response<()>) -> Result<(), Error> {
+        self.send.send_response(resp).await
+    }
+
+    pub async fn send_data(&mut self, buf: B) -> Result<(), Error> {
+        self.send.send_data(buf).await
+    }
+
+    pub async fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), Error> {
+        self.send.send_trailers(trailers).await
+    }
+
+    pub async fn finish(&mut self) -> Result<(), Error> {
+        self.send.finish().await
+    }
+
+    pub fn split(self) -> (RequestSendStream<S, B>, RequestRecvStream<R, B>) {
+        (self.send, self.recv)
+    }
+}
+
+impl<S, B> RequestRecvStream<S, B>
+where
+    S: quic::RecvStream, /*+ quic::SendStream<B>*/
+    B: Buf,
+{
+    async fn recv_trailers(&mut self) -> Result<Option<HeaderMap>, Error> {
+        self.inner.recv_trailers().await
+    }
+}
+
+impl<S, R, B> RequestStream<S, R, B>
+where
+    S: quic::SendStream<B>,
+    R: quic::RecvStream,
     B: Buf,
 {
     pub async fn recv_trailers(&mut self) -> Result<Option<HeaderMap>, Error> {
-        let res = self.inner.recv_trailers().await;
+        let res = self.recv.recv_trailers().await;
         if let Err(ref e) = res {
             if e.is_header_too_big() {
                 self.send_response(
@@ -393,7 +481,7 @@ where
     }
 }
 
-impl<S, B> Drop for RequestStream<S, B>
+impl<S, B> Drop for RequestRecvStream<S, B>
 where
     S: quic::RecvStream,
 {
