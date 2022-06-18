@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use futures_util::future;
 use http::{response, HeaderMap, Request, Response, StatusCode};
 use quic::StreamId;
@@ -318,7 +318,7 @@ impl<S, B> RequestStream<S, B>
 where
     S: quic::RecvStream,
 {
-    pub async fn recv_data(&mut self) -> Result<Option<impl Buf>, Error> {
+    pub async fn recv_data(&mut self) -> Result<Option<Bytes>, Error> {
         self.inner.recv_data().await
     }
 
