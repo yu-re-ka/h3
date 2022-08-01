@@ -9,8 +9,8 @@ edition = "2018"
 [dev-dependencies]
 bytes = "1"
 futures = "0.3"
-h3 = { path = "../h3" }
-h3-quinn = { path = "../h3-quinn" }
+h3 = { package = "httproxide-h3", version = "0.0.0", path = "../h3" }
+h3-quinn = { package = "httproxide-h3-quinn", version = "0.0.0", path = "../h3-quinn" }
 http = "0.2"
 quinn = { version = "0.8", default-features = false, features = ["tls-rustls", "ring"] }
 rcgen = { version = "0.9" }

@@ -6,8 +6,8 @@ publish = false
 edition = "2018"
 
 [dependencies]
-h3 = { path = "../../h3", features = ["test_helpers"]}
-h3-quinn = { path = "../../h3-quinn" }
+h3 = { package = "httproxide-h3", version = "0.0.0", path = "../../h3", features = ["test_helpers"]}
+h3-quinn = { package = "httproxide-h3-quinn", version = "0.0.0", path = "../../h3-quinn" }
 rcgen = { version = "0.9" }
 bytes = "1"
 futures = "0.3"

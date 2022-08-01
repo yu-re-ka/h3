@@ -1,5 +1,6 @@
 [package]
-name = "h3"
+name = "httproxide-h3"
+description = "temporary fork of unreleased h3 crate"
 version = "0.0.0"
 authors = ["Sean McArthur <sean@seanmonstar.com>", "Jean-Christophe BEGUE <jc.begue@pm.me>"]
 license = "MIT"
